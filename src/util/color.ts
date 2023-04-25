@@ -1,5 +1,20 @@
-import colorString from 'color-string';
-import {HCLColor, hslToRgb, LABColor, RGBColor, rgbToHcl, rgbToLab} from './color_spaces';
+import {ColorSpace, HSL, Lab as LabD50, LCH as LCHD50, parse, range, sRGB, to, toGamut} from 'colorjs.io/fn';
+
+ColorSpace.register(sRGB); // for parsing: keyword + hex + rgb(a)
+ColorSpace.register(HSL); // for parsing: hsl(a)
+ColorSpace.register(LCHD50); // for interpolation in LCH/HCL space
+ColorSpace.register(LabD50); // for interpolation in LAB space
+
+const interpolationColorSpace = {
+    rgb: sRGB as any,
+    hcl: LCHD50 as any, // lch/hcl d50
+    lab: LabD50 as any, // lab d50
+} as const;
+
+export type InterpolationColorSpace = keyof typeof interpolationColorSpace;
+type ColorInterpolationFn = (t: number) => Color;
+
+export type RGBColor = [r: number, g: number, b: number, alpha: number];
 
 /**
  * Color representation used by WebGL.
@@ -12,6 +27,8 @@ class Color {
     readonly g: number;
     readonly b: number;
     readonly a: number;
+
+    private interpolationCache: Partial<Record<InterpolationColorSpace, WeakMap<Color, ColorInterpolationFn>>>;
 
     /**
      * @param r Red component premultiplied by `alpha` 0..1
@@ -68,9 +85,12 @@ class Color {
             return;
         }
 
-        const rgba = parseCssColor(input.toLowerCase());
-        if (rgba) {
-            return new Color(...rgba, false);
+        try {
+            const parsedColor = to(parse(input.toLowerCase()), sRGB, {inGamut: true});
+            const {coords: [r, g, b], alpha} = parsedColor;
+            return new Color(Number(r), Number(g), Number(b), Number(alpha), false);
+        } catch {
+            return undefined;
         }
     }
 
@@ -85,22 +105,27 @@ class Color {
         return this.overwriteGetter('rgb', [r / f, g / f, b / f, a]);
     }
 
-    /**
-     * Used in color interpolation.
-     *
-     * @returns Gien color, with reversed alpha blending, in HCL color space.
-     */
-    get hcl(): HCLColor {
-        return this.overwriteGetter('hcl', rgbToHcl(this.rgb));
+    private get sRGB(): any {
+        const [r, g, b, a] = this.rgb;
+        return this.overwriteGetter('sRGB', {space: sRGB, coords: [r, g, b], alpha: a});
     }
 
-    /**
-     * Used in color interpolation.
-     *
-     * @returns Gien color, with reversed alpha blending, in LAB color space.
-     */
-    get lab(): LABColor {
-        return this.overwriteGetter('lab', rgbToLab(this.rgb));
+    getInterpolationFn(to: Color, colorSpaceKey: InterpolationColorSpace): ColorInterpolationFn {
+        if (!this.interpolationCache?.[ colorSpaceKey ]) {
+            this.interpolationCache = {...this.interpolationCache, [ colorSpaceKey ]: new WeakMap()};
+        }
+        const cacheForGivenColorSpace = this.interpolationCache[ colorSpaceKey ];
+        let interpolationFn = cacheForGivenColorSpace.get(to);
+        if (!interpolationFn) {
+            const interpolationSpace = interpolationColorSpace[ colorSpaceKey ];
+            const rangeFn = range(this.sRGB, to.sRGB, {space: interpolationSpace, outputSpace: sRGB});
+            interpolationFn = (t: number): Color => {
+                const {coords: [r, g, b], alpha} = toGamut(rangeFn(t) as any);
+                return new Color(r * alpha, g * alpha, b * alpha, +alpha);
+            };
+            cacheForGivenColorSpace.set(to, interpolationFn);
+        }
+        return interpolationFn;
     }
 
     /**
@@ -144,19 +169,6 @@ class Color {
         return `rgba(${[r, g, b].map(n => Math.round(n * 255)).join(',')},${a})`;
     }
 
-}
-
-function parseCssColor(colorToParse: string): RGBColor | undefined {
-    const parsingResult = colorString.get(colorToParse);
-    switch (parsingResult?.model) {
-        case 'rgb': {
-            const [r, g, b, alpha] = parsingResult.value;
-            return [r / 255, g / 255, b / 255, alpha];
-        }
-        case 'hsl': {
-            return hslToRgb(parsingResult.value);
-        }
-    }
 }
 
 Color.black = new Color(0, 0, 0, 1);

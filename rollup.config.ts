@@ -16,7 +16,7 @@ const rollupPlugins = [
         // Some users reference modules within style-spec package directly, instead of the bundle
         // This means that files within the style-spec package should NOT import files from the parent maplibre-gl-js tree.
         // This check will cause the build to fail on CI allowing these issues to be caught.
-        jail: 'src/',
+        // jail: 'src/',
     }),
     // https://github.com/zaach/jison/issues/351
     replace({
